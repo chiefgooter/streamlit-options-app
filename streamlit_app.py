@@ -307,13 +307,13 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
 
         col_f1, col_f2, col_f3 = st.columns([1, 1, 3])
         
-        # Ensure default min/max handles an empty DF gracefully, although it shouldn't be empty here
+        # Determine initial values for strike filters
         if not df.empty:
             min_strike_default = df['Strike'].min()
             max_strike_default = df['Strike'].max()
         else:
+            # Fallback if the dataframe is empty for some reason
             min_strike_default = 0
-            # Fallback for display if no data
             max_strike_default = summary['lastPrice'] * 2 if summary['lastPrice'] else 100
         
         st.session_state.strike_min = col_f1.number_input(
@@ -335,143 +335,142 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             (df['Strike'] <= st.session_state.strike_max)
         ].copy()
 
-        # --- Styling Logic ---
-        
-        # 1. Rename columns for the final display and create the raw display DataFrame
-        # We will keep the 'Is_ITM_Call' and 'Is_ITM_Put' columns for styling, then hide them.
-        display_df_styled_input = filtered_df.rename(columns={
-            # Volume, OI, Bid, Ask, IV (Renamed to C-/P- prefix)
-            'CALL_Volume': 'C-Vol', 'CALL_Open Interest': 'C-OI', 'CALL_Bid': 'C-Bid', 'CALL_Ask': 'C-Ask', 'CALL_IV': 'C-IV',
-            'PUT_Volume': 'P-Vol', 'PUT_Open Interest': 'P-OI', 'PUT_Bid': 'P-Bid', 'PUT_Ask': 'P-Ask', 'PUT_IV': 'P-IV',
-            # Delta, Theta (Keep original prefix for now)
-            # The columns 'CALL_Delta', 'CALL_Theta', 'PUT_Delta', 'PUT_Theta' are already correctly named in filtered_df
-        }).copy()
-
-
-        def highlight_itm(s):
-            """Applies color formatting based on ITM flags for each row."""
-            # These columns MUST exist in the DataFrame that the style is applied to.
-            # This was the cause of the previous KeyError.
-            is_call_itm = s['Is_ITM_Call']
-            is_put_itm = s['Is_ITM_Put']
+        # --- FIX: IMPORTANT CHECK TO PREVENT AttributeError ---
+        if filtered_df.empty:
+            st.warning("No options strikes found within the selected minimum and maximum strike price range. Please widen your filter range.")
+        else:
+            # --- Styling Logic ---
             
-            # Create style array with the same length as the row
-            styles = [''] * len(s) 
+            # 1. Rename columns for the final display and create the raw display DataFrame
+            display_df_styled_input = filtered_df.rename(columns={
+                # Volume, OI, Bid, Ask, IV (Renamed to C-/P- prefix)
+                'CALL_Volume': 'C-Vol', 'CALL_Open Interest': 'C-OI', 'CALL_Bid': 'C-Bid', 'CALL_Ask': 'C-Ask', 'CALL_IV': 'C-IV',
+                'PUT_Volume': 'P-Vol', 'PUT_Open Interest': 'P-OI', 'PUT_Bid': 'P-Bid', 'PUT_Ask': 'P-Ask', 'PUT_IV': 'P-IV',
+                # Delta, Theta (Keep original prefix for now)
+            }).copy()
+
+
+            def highlight_itm(s):
+                """Applies color formatting based on ITM flags for each row."""
+                is_call_itm = s['Is_ITM_Call']
+                is_put_itm = s['Is_ITM_Put']
+                
+                styles = [''] * len(s) 
+                
+                try:
+                    CALL_START_IDX = display_df_styled_input.columns.get_loc('C-Vol')
+                    CALL_END_IDX = display_df_styled_input.columns.get_loc('C-IV')
+                    PUT_START_IDX = display_df_styled_input.columns.get_loc('P-IV')
+                    PUT_END_IDX = display_df_styled_input.columns.get_loc('P-Vol')
+                    STRIKE_IDX = display_df_styled_input.columns.get_loc('Strike')
+                except KeyError:
+                    return styles
+
+                if is_call_itm:
+                    # Highlight Call side (Light Green)
+                    for i in range(CALL_START_IDX, CALL_END_IDX + 1):
+                        styles[i] = 'background-color: #ecfdf5' 
+                    styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
+                elif is_put_itm:
+                    # Highlight Put side (Light Red)
+                    for i in range(PUT_START_IDX, PUT_END_IDX + 1):
+                        styles[i] = 'background-color: #fef2f2' 
+                    styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
+                return styles
+
+
+            # 2. Apply styling and formatting to the input DataFrame (which still has the flags)
+            styled_df = display_df_styled_input.style.format({
+                'CALL_Delta': "{:.3f}", 
+                'PUT_Delta': "{:.3f}",
+                'CALL_Theta': "{:.4f}", 
+                'PUT_Theta': "{:.4f}",
+                'C-IV': "{:.2%}",
+                'P-IV': "{:.2%}",
+                'Strike': "{:.2f}",
+                'C-Bid': "{:.2f}", 'C-Ask': "{:.2f}",
+                'P-Bid': "{:.2f}", 'P-Ask': "{:.2f}",
+            }).apply(highlight_itm, axis=1)
+
+
+            # 3. Define the final columns for display (hiding the flags)
+            DISPLAY_COLUMNS = [
+                'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
+                'Strike', 
+                'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
+            ]
             
-            # Get the column index (position) of the first and last column of the call/put side, and the strike
-            # This makes the styling logic independent of the exact position of the helper columns (Is_ITM_Call, Is_ITM_Put)
-            try:
-                CALL_START_IDX = display_df_styled_input.columns.get_loc('C-Vol')
-                CALL_END_IDX = display_df_styled_input.columns.get_loc('C-IV')
-                PUT_START_IDX = display_df_styled_input.columns.get_loc('P-IV')
-                PUT_END_IDX = display_df_styled_input.columns.get_loc('P-Vol')
-                STRIKE_IDX = display_df_styled_input.columns.get_loc('Strike')
-            except KeyError:
-                 # This catch is mainly for robustness, but the columns *should* exist here.
-                 return styles
+            # 4. Use the subset feature on the Styler object to select only the desired columns
+            styled_df_final = styled_df.subset(columns=DISPLAY_COLUMNS)
 
-            if is_call_itm:
-                # Highlight Call side
-                for i in range(CALL_START_IDX, CALL_END_IDX + 1):
-                    styles[i] = 'background-color: #ecfdf5' # Light Green
-                styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
-            elif is_put_itm:
-                # Highlight Put side
-                for i in range(PUT_START_IDX, PUT_END_IDX + 1):
-                    styles[i] = 'background-color: #fef2f2' # Light Red
-                styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
-            return styles
-
-
-        # 2. Apply styling and formatting to the input DataFrame (which still has the flags)
-        styled_df = display_df_styled_input.style.format({
-            'CALL_Delta': "{:.3f}", 
-            'PUT_Delta': "{:.3f}",
-            'CALL_Theta': "{:.4f}", 
-            'PUT_Theta': "{:.4f}",
-            'C-IV': "{:.2%}",
-            'P-IV': "{:.2%}",
-            'Strike': "{:.2f}",
-            'C-Bid': "{:.2f}", 'C-Ask': "{:.2f}",
-            'P-Bid': "{:.2f}", 'P-Ask': "{:.2f}",
-        }).apply(highlight_itm, axis=1)
-
-
-        # 3. Define the final columns for display (hiding the flags)
-        DISPLAY_COLUMNS = [
-            'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
-            'Strike', 
-            'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
-        ]
-        
-        # 4. Use the subset feature on the Styler object to select only the desired columns
-        styled_df_final = styled_df.subset(columns=DISPLAY_COLUMNS)
-
-        # Custom header for the options chain
-        st.markdown("""
-            <style>
-            .stDataFrame table th:nth-child(8) {
-                background-color: #4b5563 !important; 
-                color: white !important; 
-                font-weight: bold !important;
-            }
-            </style>
-            <div style='text-align: center; display: flex; width: 100%; border-radius: 0.5rem; overflow: hidden; font-weight: bold;'>
-                <div style='flex: 7; background-color: #d1d5db; color: #1f2937; padding: 5px; border-right: 1px solid #9ca3af;'>CALLS</div>
-                <div style='flex: 1; background-color: #4b5563; color: white; padding: 5px;'>STRIKE</div>
-                <div style='flex: 7; background-color: #d1d5db; color: #1f2937; padding: 5px; border-left: 1px solid #9ca3af;'>PUTS</div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Display the final styled DataFrame
-        st.dataframe(
-            styled_df_final,
-            use_container_width=True,
-            hide_index=True
-        )
+            # Custom header for the options chain
+            st.markdown("""
+                <style>
+                .stDataFrame table th:nth-child(8) {
+                    background-color: #4b5563 !important; 
+                    color: white !important; 
+                    font-weight: bold !important;
+                }
+                </style>
+                <div style='text-align: center; display: flex; width: 100%; border-radius: 0.5rem; overflow: hidden; font-weight: bold;'>
+                    <div style='flex: 7; background-color: #d1d5db; color: #1f2937; padding: 5px; border-right: 1px solid #9ca3af;'>CALLS</div>
+                    <div style='flex: 1; background-color: #4b5563; color: white; padding: 5px;'>STRIKE</div>
+                    <div style='flex: 7; background-color: #d1d5db; color: #1f2937; padding: 5px; border-left: 1px solid #9ca3af;'>PUTS</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Display the final styled DataFrame
+            st.dataframe(
+                styled_df_final,
+                use_container_width=True,
+                hide_index=True
+            )
 
 
     with tab3:
         st.subheader("Volume and Open Interest Distribution by Strike")
         
-        chart_df = filtered_df.copy()
-        
-        melted_df = pd.melt(
-            chart_df, 
-            id_vars=['Strike'], 
-            value_vars=['CALL_Volume', 'PUT_Volume', 'CALL_Open Interest', 'PUT_Open Interest'],
-            var_name='Metric', 
-            value_name='Value'
-        )
-        
-        color_map = {
-            'CALL_Volume': '#10b981', 
-            'PUT_Volume': '#ef4444', 
-            'CALL_Open Interest': '#34d399', 
-            'PUT_Open Interest': '#f87171'
-        }
+        # Use a check here too, otherwise the plotting can fail on empty data
+        if filtered_df.empty:
+            st.warning("Cannot generate visualization: No options data available for the selected range.")
+        else:
+            chart_df = filtered_df.copy()
+            
+            melted_df = pd.melt(
+                chart_df, 
+                id_vars=['Strike'], 
+                value_vars=['CALL_Volume', 'PUT_Volume', 'CALL_Open Interest', 'PUT_Open Interest'],
+                var_name='Metric', 
+                value_name='Value'
+            )
+            
+            color_map = {
+                'CALL_Volume': '#10b981', 
+                'PUT_Volume': '#ef4444', 
+                'CALL_Open Interest': '#34d399', 
+                'PUT_Open Interest': '#f87171'
+            }
 
-        fig = px.bar(
-            melted_df, 
-            x='Strike', 
-            y='Value', 
-            color='Metric',
-            color_discrete_map=color_map,
-            barmode='group',
-            height=550,
-            title=f"Options Flow by Strike ({summary['expiration']})",
-            labels={'Value': 'Total Contracts', 'Strike': 'Strike Price', 'Metric': 'Flow Metric'},
-            hover_data={'Value': True, 'Metric': False}
-        )
-        
-        fig.add_vline(
-            x=summary['lastPrice'], 
-            line_width=3, 
-            line_dash="dash", 
-            line_color="#2563eb", 
-            annotation_text=f"Stock Price ${summary['lastPrice']:.2f}",
-            annotation_position="top right"
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-
+            fig = px.bar(
+                melted_df, 
+                x='Strike', 
+                y='Value', 
+                color='Metric',
+                color_discrete_map=color_map,
+                barmode='group',
+                height=550,
+                title=f"Options Flow by Strike ({summary['expiration']})",
+                labels={'Value': 'Total Contracts', 'Strike': 'Strike Price', 'Metric': 'Flow Metric'},
+                hover_data={'Value': True, 'Metric': False}
+            )
+            
+            fig.add_vline(
+                x=summary['lastPrice'], 
+                line_width=3, 
+                line_dash="dash", 
+                line_color="#2563eb", 
+                annotation_text=f"Stock Price ${summary['lastPrice']:.2f}",
+                annotation_position="top right"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
