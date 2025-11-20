@@ -16,7 +16,6 @@ RISK_FREE_RATE = 0.01  # 1% risk-free rate assumption (used for Greeks calculati
 def fetch_options_data(ticker_symbol, selected_expiration):
     """
     Fetches stock data, options chain, and calculates Greeks using yfinance and py_vollib.
-    This version includes robust checks for zero/NaN values to prevent calculation errors.
     """
     try:
         if not ticker_symbol:
@@ -76,11 +75,10 @@ def fetch_options_data(ticker_symbol, selected_expiration):
             df['mid_price'] = (df['bid'] + df['ask']) / 2
             df = df.astype({'strike': float, 'mid_price': float, 'volume': float, 'openInterest': float})
             
-            # 2. Set an option price for calculation: use mid_price. Filter out contracts with zero premium.
+            # 2. Set an option price for calculation: use mid_price.
             option_price = df['mid_price']
             
             # --- Implied Volatility (IV) Calculation ---
-            # We use numpy.where combined with a vectorized function for safe IV calculation.
             
             # 3. Define the vectorized IV function
             def safe_implied_volatility(price, strike):
@@ -88,7 +86,7 @@ def fetch_options_data(ticker_symbol, selected_expiration):
                     # 'k' is the strike price, 's' is the current stock price (last_price)
                     return implied_volatility(price, last_price, strike, time_to_exp, RISK_FREE_RATE, flag)
                 except Exception:
-                    return np.nan # Return NaN if calculation fails (e.g., price is too high/low)
+                    return np.nan # Return NaN if calculation fails
 
             vectorized_iv = np.vectorize(safe_implied_volatility)
 
@@ -97,17 +95,19 @@ def fetch_options_data(ticker_symbol, selected_expiration):
                 vectorized_iv(option_price, df['strike']),
                 np.nan
             )
+            # Store the computed IV in the correct column name
             df['impliedVolatility'] = valid_iv
             
-            # 4. Filter out extreme/invalid IVs and fill missing values
+            # 4. Filter out extreme/invalid IVs
             df['impliedVolatility'] = np.where(
                 (df['impliedVolatility'] > 3.0) | (df['impliedVolatility'] < 0.01), 
                 np.nan, df['impliedVolatility']
             )
             
+            # --- FIX: CORRECTED TYPO HERE ---
             # Use median IV for missing values (crucial for Greeks calculation)
-            median_iv = df['implledVolatility'].median()
-            # If median is also NaN (e.g., only one row), fall back to a reasonable 50% IV
+            median_iv = df['impliedVolatility'].median() 
+            # If median is also NaN, fall back to a reasonable 50% IV
             df['IV'] = df['impliedVolatility'].fillna(median_iv if pd.notna(median_iv) else 0.5) 
             
             # 5. Set a minimum IV floor (e.g., 1%) to prevent zero-division in Greeks model
@@ -176,7 +176,7 @@ def fetch_options_data(ticker_symbol, selected_expiration):
         st.code(f"Detailed Error: {e}", language='text')
         return None, None, None, None
 
-# --- STREAMLIT UI LAYOUT AND LOGIC (REST OF THE APP REMAINS THE SAME) ---
+# --- STREAMLIT UI LAYOUT AND LOGIC ---
 
 # Set wide layout and title
 st.set_page_config(layout="wide", page_title="Advanced Options Flow & Greeks Analyzer")
@@ -184,7 +184,7 @@ st.set_page_config(layout="wide", page_title="Advanced Options Flow & Greeks Ana
 st.title("Advanced Options Flow & Greeks Analyzer")
 st.markdown("Real data (often delayed) with calculated Black-Scholes Greeks.")
 
-# Initialize session state (omitted for brevity, assume it's set up)
+# Initialize session state 
 if 'ticker' not in st.session_state: st.session_state.ticker = "AAPL"
 if 'data_summary' not in st.session_state: st.session_state.data_summary = None
 if 'data_chain' not in st.session_state: st.session_state.data_chain = None
@@ -207,16 +207,22 @@ with st.container():
         ).upper().strip()
 
     with col2:
-        if st.session_state.expirations and st.session_state.selected_exp in st.session_state.expirations:
-            default_index = st.session_state.expirations.index(st.session_state.selected_exp)
-        else:
-            default_index = 0
+        # Determine the default index for the select box safely
+        current_exp_list = st.session_state.expirations
+        current_selected = st.session_state.selected_exp
+        
+        default_index = 0
+        if current_selected and current_selected in current_exp_list:
+            default_index = current_exp_list.index(current_selected)
+        elif current_exp_list:
+            # If nothing selected yet, select the first one
+            st.session_state.selected_exp = current_exp_list[0]
             
         st.session_state.selected_exp = st.selectbox(
             "Select Expiration Date",
-            options=st.session_state.expirations,
+            options=current_exp_list,
             index=default_index,
-            disabled=not st.session_state.expirations,
+            disabled=not current_exp_list,
             key="exp_select_box"
         )
 
@@ -224,11 +230,15 @@ with st.container():
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         if st.button("Fetch Options Data", type="primary", use_container_width=True):
             with st.spinner(f"Fetching data for {st.session_state.ticker}..."):
-                # Always re-fetch the list of expirations first to ensure we have the latest
+                # Step 1: Get Expirations List
                 _, _, all_expirations, _ = fetch_options_data(st.session_state.ticker, None)
                 st.session_state.expirations = all_expirations if all_expirations else []
                 
-                # If an expiration is available, fetch the full chain
+                # If the selected_exp is now invalid (e.g., we changed the ticker), reset it
+                if st.session_state.selected_exp not in st.session_state.expirations and st.session_state.expirations:
+                     st.session_state.selected_exp = st.session_state.expirations[0]
+
+                # Step 2: Fetch the full chain if we have a valid expiration selected
                 if st.session_state.selected_exp and st.session_state.selected_exp in st.session_state.expirations:
                     summary, chain, _, flow = fetch_options_data(st.session_state.ticker, st.session_state.selected_exp)
                     st.session_state.data_summary = summary
@@ -241,8 +251,8 @@ with st.container():
 
             st.rerun() 
 
-# --- INITIAL LOAD ---
-if st.session_state.data_summary is None and st.session_state.ticker and not st.session_state.expirations:
+# --- INITIAL LOAD (To automatically fetch expirations on first load) ---
+if not st.session_state.expirations and st.session_state.ticker:
      with st.spinner(f"Loading available expirations for {st.session_state.ticker}..."):
         # Step 1: Get Expirations List
         summary, chain, all_expirations, flow = fetch_options_data(st.session_state.ticker, None)
@@ -267,6 +277,8 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
     df = st.session_state.data_chain
     flow = st.session_state.flow_indicators
 
+    # The issue was that if an error occurred above, these lines were never hit.
+    # The fix in the data fetching function should prevent the crash.
     tab1, tab2, tab3 = st.tabs(["📊 Summary & Flow", "📜 Options Chain & Greeks", "📈 Visualization"])
 
     with tab1:
@@ -312,7 +324,7 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             min_strike_default = df['Strike'].min()
             max_strike_default = df['Strike'].max()
         else:
-            # Fallback if the dataframe is empty for some reason
+            # Fallback if the dataframe is empty
             min_strike_default = 0
             max_strike_default = summary['lastPrice'] * 2 if summary['lastPrice'] else 100
         
@@ -335,7 +347,7 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             (df['Strike'] <= st.session_state.strike_max)
         ].copy()
 
-        # --- IMPORTANT CHECK TO PREVENT AttributeError ---
+        # --- IMPORTANT CHECK: If filtering yields empty data, show warning ---
         if filtered_df.empty:
             st.warning("No options strikes found within the selected minimum and maximum strike price range. Please widen your filter range.")
         else:
@@ -379,6 +391,7 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
                     PUT_END_IDX = df_final_for_styler.columns.get_loc('P-Vol')
                     STRIKE_IDX = df_final_for_styler.columns.get_loc('Strike')
                 except KeyError:
+                    # This should not happen if column definition is correct, but safe guard.
                     return styles
 
                 if is_call_itm:
@@ -408,14 +421,14 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             }).apply(highlight_itm, axis=1)
 
 
-            # 4. Use hide() instead of subset() to conceal the flag columns
-            # This is the fix for the AttributeError on line 404/408
+            # 4. Use hide() to conceal the flag columns
             styled_df_final = styled_df.hide(columns=['Is_ITM_Call', 'Is_ITM_Put'])
 
 
             # Custom header for the options chain
             st.markdown("""
                 <style>
+                /* Style the strike column header */
                 .stDataFrame table th:nth-child(8) {
                     background-color: #4b5563 !important; 
                     color: white !important; 
@@ -440,7 +453,6 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
     with tab3:
         st.subheader("Volume and Open Interest Distribution by Strike")
         
-        # Use a check here too, otherwise the plotting can fail on empty data
         if filtered_df.empty:
             st.warning("Cannot generate visualization: No options data available for the selected range.")
         else:
