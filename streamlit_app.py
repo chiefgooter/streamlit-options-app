@@ -126,6 +126,8 @@ def fetch_options_data(ticker_symbol, selected_expiration):
             # Select and rename columns
             prefix = 'CALL_' if flag == 'c' else 'PUT_'
             df_cols = df[['strike', 'volume', 'openInterest', 'bid', 'ask', 'Delta', 'Theta', 'IV']].copy()
+            
+            # Rename all columns for consistency before merge
             df_cols.rename(columns={
                 'strike': 'Strike',
                 'volume': prefix + 'Volume',
@@ -327,46 +329,62 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             key='max_strike_t2'
         )
         
+        # Filter the main DataFrame
         filtered_df = df[
             (df['Strike'] >= st.session_state.strike_min) & 
             (df['Strike'] <= st.session_state.strike_max)
         ].copy()
 
-        def highlight_itm(s):
-            is_call_itm = s['Is_ITM_Call']
-            is_put_itm = s['Is_ITM_Put']
-            styles = [''] * len(s) 
-            CALL_START = 1
-            CALL_END = 7 
-            PUT_START = 8
-            PUT_END = 14 
-
-            if is_call_itm:
-                for i in range(CALL_START, CALL_END + 1):
-                    styles[i] = 'background-color: #ecfdf5' 
-                styles[0] = 'background-color: #e5e7eb' 
-            elif is_put_itm:
-                for i in range(PUT_START, PUT_END + 1):
-                    styles[i] = 'background-color: #fef2f2' 
-                styles[0] = 'background-color: #e5e7eb' 
-            return styles
-
-        display_df_raw = filtered_df.drop(columns=['Is_ITM_Call', 'Is_ITM_Put'], errors='ignore')
-
-        display_df_raw.rename(columns={
+        # --- Styling Logic ---
+        
+        # 1. Rename columns for the final display and create the raw display DataFrame
+        # We will keep the 'Is_ITM_Call' and 'Is_ITM_Put' columns for styling, then hide them.
+        display_df_styled_input = filtered_df.rename(columns={
+            # Volume, OI, Bid, Ask, IV (Renamed to C-/P- prefix)
             'CALL_Volume': 'C-Vol', 'CALL_Open Interest': 'C-OI', 'CALL_Bid': 'C-Bid', 'CALL_Ask': 'C-Ask', 'CALL_IV': 'C-IV',
             'PUT_Volume': 'P-Vol', 'PUT_Open Interest': 'P-OI', 'PUT_Bid': 'P-Bid', 'PUT_Ask': 'P-Ask', 'PUT_IV': 'P-IV',
-        }, inplace=True)
-        
-        DISPLAY_COLUMNS = [
-            'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
-            'Strike', 
-            'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
-        ]
-        
-        display_df = display_df_raw[DISPLAY_COLUMNS]
+            # Delta, Theta (Keep original prefix for now)
+            # The columns 'CALL_Delta', 'CALL_Theta', 'PUT_Delta', 'PUT_Theta' are already correctly named in filtered_df
+        }).copy()
 
-        display_df = display_df.style.format({
+
+        def highlight_itm(s):
+            """Applies color formatting based on ITM flags for each row."""
+            # These columns MUST exist in the DataFrame that the style is applied to.
+            # This was the cause of the previous KeyError.
+            is_call_itm = s['Is_ITM_Call']
+            is_put_itm = s['Is_ITM_Put']
+            
+            # Create style array with the same length as the row
+            styles = [''] * len(s) 
+            
+            # Get the column index (position) of the first and last column of the call/put side, and the strike
+            # This makes the styling logic independent of the exact position of the helper columns (Is_ITM_Call, Is_ITM_Put)
+            try:
+                CALL_START_IDX = display_df_styled_input.columns.get_loc('C-Vol')
+                CALL_END_IDX = display_df_styled_input.columns.get_loc('C-IV')
+                PUT_START_IDX = display_df_styled_input.columns.get_loc('P-IV')
+                PUT_END_IDX = display_df_styled_input.columns.get_loc('P-Vol')
+                STRIKE_IDX = display_df_styled_input.columns.get_loc('Strike')
+            except KeyError:
+                 # This catch is mainly for robustness, but the columns *should* exist here.
+                 return styles
+
+            if is_call_itm:
+                # Highlight Call side
+                for i in range(CALL_START_IDX, CALL_END_IDX + 1):
+                    styles[i] = 'background-color: #ecfdf5' # Light Green
+                styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
+            elif is_put_itm:
+                # Highlight Put side
+                for i in range(PUT_START_IDX, PUT_END_IDX + 1):
+                    styles[i] = 'background-color: #fef2f2' # Light Red
+                styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
+            return styles
+
+
+        # 2. Apply styling and formatting to the input DataFrame (which still has the flags)
+        styled_df = display_df_styled_input.style.format({
             'CALL_Delta': "{:.3f}", 
             'PUT_Delta': "{:.3f}",
             'CALL_Theta': "{:.4f}", 
@@ -378,6 +396,18 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             'P-Bid': "{:.2f}", 'P-Ask': "{:.2f}",
         }).apply(highlight_itm, axis=1)
 
+
+        # 3. Define the final columns for display (hiding the flags)
+        DISPLAY_COLUMNS = [
+            'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
+            'Strike', 
+            'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
+        ]
+        
+        # 4. Use the subset feature on the Styler object to select only the desired columns
+        styled_df_final = styled_df.subset(columns=DISPLAY_COLUMNS)
+
+        # Custom header for the options chain
         st.markdown("""
             <style>
             .stDataFrame table th:nth-child(8) {
@@ -393,8 +423,9 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             </div>
         """, unsafe_allow_html=True)
         
+        # Display the final styled DataFrame
         st.dataframe(
-            display_df,
+            styled_df_final,
             use_container_width=True,
             hide_index=True
         )
