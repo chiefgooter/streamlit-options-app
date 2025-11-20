@@ -444,4 +444,3 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
         
         st.plotly_chart(fig, use_container_width=True)
 
-Please make sure to replace the entire content of your `streamlit_app.py` file with the code provided above. The additional error handling for the Greeks calculation should resolve the runtime crash you were encountering!
