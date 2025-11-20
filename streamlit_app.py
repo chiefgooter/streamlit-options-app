@@ -106,7 +106,7 @@ def fetch_options_data(ticker_symbol, selected_expiration):
             )
             
             # Use median IV for missing values (crucial for Greeks calculation)
-            median_iv = df['impliedVolatility'].median()
+            median_iv = df['implledVolatility'].median()
             # If median is also NaN (e.g., only one row), fall back to a reasonable 50% IV
             df['IV'] = df['impliedVolatility'].fillna(median_iv if pd.notna(median_iv) else 0.5) 
             
@@ -335,52 +335,67 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             (df['Strike'] <= st.session_state.strike_max)
         ].copy()
 
-        # --- FIX: IMPORTANT CHECK TO PREVENT AttributeError ---
+        # --- IMPORTANT CHECK TO PREVENT AttributeError ---
         if filtered_df.empty:
             st.warning("No options strikes found within the selected minimum and maximum strike price range. Please widen your filter range.")
         else:
-            # --- Styling Logic ---
             
-            # 1. Rename columns for the final display and create the raw display DataFrame
-            display_df_styled_input = filtered_df.rename(columns={
-                # Volume, OI, Bid, Ask, IV (Renamed to C-/P- prefix)
+            # 1. Define Rename Map
+            RENAME_MAP = {
                 'CALL_Volume': 'C-Vol', 'CALL_Open Interest': 'C-OI', 'CALL_Bid': 'C-Bid', 'CALL_Ask': 'C-Ask', 'CALL_IV': 'C-IV',
                 'PUT_Volume': 'P-Vol', 'PUT_Open Interest': 'P-OI', 'PUT_Bid': 'P-Bid', 'PUT_Ask': 'P-Ask', 'PUT_IV': 'P-IV',
-                # Delta, Theta (Keep original prefix for now)
-            }).copy()
+            }
+
+            # Apply rename to a copy (includes Delta/Theta/Strike and ITM flags)
+            df_renamed = filtered_df.rename(columns=RENAME_MAP).copy()
+
+            # Define the final columns for display 
+            DISPLAY_COLUMNS = [
+                'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
+                'Strike', 
+                'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
+            ]
+            
+            # 2. Subset the DataFrame *before* styling, including the ITM flags needed for highlight_itm
+            columns_for_styling = DISPLAY_COLUMNS + ['Is_ITM_Call', 'Is_ITM_Put']
+            df_final_for_styler = df_renamed[columns_for_styling].copy()
 
 
+            # --- Styling Logic ---
             def highlight_itm(s):
                 """Applies color formatting based on ITM flags for each row."""
                 is_call_itm = s['Is_ITM_Call']
                 is_put_itm = s['Is_ITM_Put']
                 
+                # Create style array with the same length as the row
                 styles = [''] * len(s) 
                 
+                # Get the column index (position) of the first and last column of the call/put side, and the strike
                 try:
-                    CALL_START_IDX = display_df_styled_input.columns.get_loc('C-Vol')
-                    CALL_END_IDX = display_df_styled_input.columns.get_loc('C-IV')
-                    PUT_START_IDX = display_df_styled_input.columns.get_loc('P-IV')
-                    PUT_END_IDX = display_df_styled_input.columns.get_loc('P-Vol')
-                    STRIKE_IDX = display_df_styled_input.columns.get_loc('Strike')
+                    # Indices relative to df_final_for_styler's columns
+                    CALL_START_IDX = df_final_for_styler.columns.get_loc('C-Vol')
+                    CALL_END_IDX = df_final_for_styler.columns.get_loc('C-IV')
+                    PUT_START_IDX = df_final_for_styler.columns.get_loc('P-IV')
+                    PUT_END_IDX = df_final_for_styler.columns.get_loc('P-Vol')
+                    STRIKE_IDX = df_final_for_styler.columns.get_loc('Strike')
                 except KeyError:
                     return styles
 
                 if is_call_itm:
-                    # Highlight Call side (Light Green)
+                    # Highlight Call side
                     for i in range(CALL_START_IDX, CALL_END_IDX + 1):
-                        styles[i] = 'background-color: #ecfdf5' 
+                        styles[i] = 'background-color: #ecfdf5' # Light Green
                     styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
                 elif is_put_itm:
-                    # Highlight Put side (Light Red)
+                    # Highlight Put side
                     for i in range(PUT_START_IDX, PUT_END_IDX + 1):
-                        styles[i] = 'background-color: #fef2f2' 
+                        styles[i] = 'background-color: #fef2f2' # Light Red
                     styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
                 return styles
 
 
-            # 2. Apply styling and formatting to the input DataFrame (which still has the flags)
-            styled_df = display_df_styled_input.style.format({
+            # 3. Apply styling and formatting to the subset DataFrame
+            styled_df = df_final_for_styler.style.format({
                 'CALL_Delta': "{:.3f}", 
                 'PUT_Delta': "{:.3f}",
                 'CALL_Theta': "{:.4f}", 
@@ -393,15 +408,10 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             }).apply(highlight_itm, axis=1)
 
 
-            # 3. Define the final columns for display (hiding the flags)
-            DISPLAY_COLUMNS = [
-                'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
-                'Strike', 
-                'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
-            ]
-            
-            # 4. Use the subset feature on the Styler object to select only the desired columns
-            styled_df_final = styled_df.subset(columns=DISPLAY_COLUMNS)
+            # 4. Use hide() instead of subset() to conceal the flag columns
+            # This is the fix for the AttributeError on line 404/408
+            styled_df_final = styled_df.hide(columns=['Is_ITM_Call', 'Is_ITM_Put'])
+
 
             # Custom header for the options chain
             st.markdown("""
