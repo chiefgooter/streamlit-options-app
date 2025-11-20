@@ -301,17 +301,13 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
         col_pcr_v, col_pcr_oi, col_vol_c, col_vol_p = st.columns(4)
         
         # P/C Ratio logic: High P/C (above 1) is Bearish (Red). Low P/C (below 1) is Bullish (Green).
-        # Streamlit's 'inverse' setting reverses color from its default (positive is green, negative is red).
-        # We want > 1.05 to be red (default behavior for positive numbers when delta is omitted)
-        # We want < 0.95 to be green ('inverse' of red for negative numbers)
-        
         pcr_v_sentiment = "Neutral"
         pcr_v_color = "off"
         if flow['PCR_Volume'] > 1.05:
             pcr_v_sentiment = "Bearish"
         elif flow['PCR_Volume'] < 0.95:
             pcr_v_sentiment = "Bullish"
-            pcr_v_color = "inverse"
+            pcr_v_color = "inverse" # Inverse color makes negative (less than 1) green
             
         pcr_oi_sentiment = "Neutral"
         pcr_oi_color = "off"
@@ -319,7 +315,7 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             pcr_oi_sentiment = "Bearish"
         elif flow['PCR_OI'] < 0.95:
             pcr_oi_sentiment = "Bullish"
-            pcr_oi_color = "inverse"
+            pcr_oi_color = "inverse" # Inverse color makes negative (less than 1) green
 
 
         col_pcr_v.metric(
@@ -395,8 +391,13 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             # The data that the styler will operate on (includes flags)
             df_for_styler = df_renamed.copy()
 
-
             # --- Styling Logic ---
+            
+            # Define new dark colors for better contrast in dark mode
+            ITM_CALL_COLOR = '#14532d'  # Dark Forest Green
+            ITM_PUT_COLOR = '#7f1d1d'   # Dark Maroon Red
+            ATM_STRIKE_COLOR = '#374151' # Darker Gray for Strike Column
+
             def highlight_itm(s):
                 """Applies color formatting based on ITM flags for each row."""
                 is_call_itm = s['Is_ITM_Call']
@@ -406,24 +407,17 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
                 styles = {}
                 
                 if is_call_itm:
-                    # Highlight Call side columns
+                    # Highlight Call side columns with DARK GREEN
                     for col in ['C-Vol', 'C-OI', 'C-Delta', 'C-Theta', 'C-Bid', 'C-Ask', 'C-IV']:
-                        styles[col] = 'background-color: #ecfdf5' # Light Green
-                    styles['Strike'] = 'background-color: #e5e7eb' # Darker gray for ATM
+                        styles[col] = f'background-color: {ITM_CALL_COLOR}'
+                    styles['Strike'] = f'background-color: {ATM_STRIKE_COLOR}'
                 elif is_put_itm:
-                    # Highlight Put side columns
+                    # Highlight Put side columns with DARK RED
                     for col in ['P-IV', 'P-Bid', 'P-Ask', 'P-Delta', 'P-Theta', 'P-OI', 'P-Vol']:
-                        styles[col] = 'background-color: #fef2f2' # Light Red
-                    styles['Strike'] = 'background-color: #e5e7eb' # Darker gray for ATM
+                        styles[col] = f'background-color: {ITM_PUT_COLOR}'
+                    styles['Strike'] = f'background-color: {ATM_STRIKE_COLOR}'
                     
-                # The apply function needs to return an array of strings, one for each column
-                # We build the output based on the column order in df_for_styler (which contains all columns)
-                # Since Streamlit's styler often fails with column-wise styling (apply(axis=1)), 
-                # we must return a list of styles for the entire row of the DataFrame being styled.
-                # However, since Streamlit only uses a subset of columns for display, we must ensure
-                # the styling function only targets the displayed columns correctly.
-                
-                # --- NEW ROBUST RETURN LOGIC: Return array matching the columns in df_for_styler ---
+                # Return array matching the columns in df_for_styler
                 style_array = []
                 for col_name in df_for_styler.columns:
                     style_array.append(styles.get(col_name, ''))
@@ -447,9 +441,7 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
                 'P-Bid': "{:.2f}", 'P-Ask': "{:.2f}",
             })
 
-            # 3. Final Display (we MUST use the styled object with a subset of the *original* columns)
-            # The style object retains the formatting, and when rendered, only the columns present
-            # in the DISPLAY_COLUMNS list are shown. This avoids the use of .hide() or .subset() on the Styler.
+            # 3. Final Display
             df_display = styled_df.set_properties(**{'border-color': '#444'}).set_table_attributes('style="width:100%"')
 
             # Custom header for the options chain
