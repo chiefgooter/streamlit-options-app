@@ -95,7 +95,7 @@ def fetch_options_data(ticker_symbol, selected_expiration):
                 vectorized_iv(option_price, df['strike']),
                 np.nan
             )
-            # Store the computed IV in the correct column name
+            # Store the computed IV
             df['impliedVolatility'] = valid_iv
             
             # 4. Filter out extreme/invalid IVs
@@ -104,7 +104,6 @@ def fetch_options_data(ticker_symbol, selected_expiration):
                 np.nan, df['impliedVolatility']
             )
             
-            # --- FIX: CORRECTED TYPO HERE ---
             # Use median IV for missing values (crucial for Greeks calculation)
             median_iv = df['impliedVolatility'].median() 
             # If median is also NaN, fall back to a reasonable 50% IV
@@ -229,6 +228,9 @@ with st.container():
     with col3:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
         if st.button("Fetch Options Data", type="primary", use_container_width=True):
+            # Clear cache to force fresh data load
+            st.cache_data.clear()
+
             with st.spinner(f"Fetching data for {st.session_state.ticker}..."):
                 # Step 1: Get Expirations List
                 _, _, all_expirations, _ = fetch_options_data(st.session_state.ticker, None)
@@ -277,8 +279,6 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
     df = st.session_state.data_chain
     flow = st.session_state.flow_indicators
 
-    # The issue was that if an error occurred above, these lines were never hit.
-    # The fix in the data fetching function should prevent the crash.
     tab1, tab2, tab3 = st.tabs(["📊 Summary & Flow", "📜 Options Chain & Greeks", "📈 Visualization"])
 
     with tab1:
@@ -286,6 +286,8 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
         
         col_price, col_change, col_vol, col_exp = st.columns(4)
         
+        # Use 'inverse' color for delta/change since positive change (green) means bullish (green), but 
+        # for P/C ratio, high (red) is bearish, low (green) is bullish.
         change_color = "inverse" 
 
         col_price.metric("Last Price", f"${summary['lastPrice']:.2f}")
@@ -297,18 +299,40 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
         st.subheader("Market Sentiment (Put/Call Ratios)")
         
         col_pcr_v, col_pcr_oi, col_vol_c, col_vol_p = st.columns(4)
+        
+        # P/C Ratio logic: High P/C (above 1) is Bearish (Red). Low P/C (below 1) is Bullish (Green).
+        # Streamlit's 'inverse' setting reverses color from its default (positive is green, negative is red).
+        # We want > 1.05 to be red (default behavior for positive numbers when delta is omitted)
+        # We want < 0.95 to be green ('inverse' of red for negative numbers)
+        
+        pcr_v_sentiment = "Neutral"
+        pcr_v_color = "off"
+        if flow['PCR_Volume'] > 1.05:
+            pcr_v_sentiment = "Bearish"
+        elif flow['PCR_Volume'] < 0.95:
+            pcr_v_sentiment = "Bullish"
+            pcr_v_color = "inverse"
+            
+        pcr_oi_sentiment = "Neutral"
+        pcr_oi_color = "off"
+        if flow['PCR_OI'] > 1.05:
+            pcr_oi_sentiment = "Bearish"
+        elif flow['PCR_OI'] < 0.95:
+            pcr_oi_sentiment = "Bullish"
+            pcr_oi_color = "inverse"
+
 
         col_pcr_v.metric(
             "Volume P/C Ratio", 
             f"{flow['PCR_Volume']:.2f}",
-            delta="Bearish" if flow['PCR_Volume'] > 1.05 else "Bullish" if flow['PCR_Volume'] < 0.95 else "Neutral",
-            delta_color="inverse" if flow['PCR_Volume'] < 0.95 else "off"
+            delta=pcr_v_sentiment,
+            delta_color=pcr_v_color
         )
         col_pcr_oi.metric(
             "Open Interest P/C Ratio", 
             f"{flow['PCR_OI']:.2f}",
-            delta="Bearish" if flow['PCR_OI'] > 1.05 else "Bullish" if flow['PCR_OI'] < 0.95 else "Neutral",
-            delta_color="inverse" if flow['PCR_OI'] < 0.95 else "off"
+            delta=pcr_oi_sentiment,
+            delta_color=pcr_oi_color
         )
         col_vol_c.metric("Total Call Volume", f"{flow['Total_Call_Volume']:,}")
         col_vol_p.metric("Total Put Volume", f"{flow['Total_Put_Volume']:,}")
@@ -324,7 +348,6 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             min_strike_default = df['Strike'].min()
             max_strike_default = df['Strike'].max()
         else:
-            # Fallback if the dataframe is empty
             min_strike_default = 0
             max_strike_default = summary['lastPrice'] * 2 if summary['lastPrice'] else 100
         
@@ -347,7 +370,6 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             (df['Strike'] <= st.session_state.strike_max)
         ].copy()
 
-        # --- IMPORTANT CHECK: If filtering yields empty data, show warning ---
         if filtered_df.empty:
             st.warning("No options strikes found within the selected minimum and maximum strike price range. Please widen your filter range.")
         else:
@@ -356,21 +378,22 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
             RENAME_MAP = {
                 'CALL_Volume': 'C-Vol', 'CALL_Open Interest': 'C-OI', 'CALL_Bid': 'C-Bid', 'CALL_Ask': 'C-Ask', 'CALL_IV': 'C-IV',
                 'PUT_Volume': 'P-Vol', 'PUT_Open Interest': 'P-OI', 'PUT_Bid': 'P-Bid', 'PUT_Ask': 'P-Ask', 'PUT_IV': 'P-IV',
+                'CALL_Delta': 'C-Delta', 'CALL_Theta': 'C-Theta',
+                'PUT_Delta': 'P-Delta', 'PUT_Theta': 'P-Theta',
             }
 
             # Apply rename to a copy (includes Delta/Theta/Strike and ITM flags)
             df_renamed = filtered_df.rename(columns=RENAME_MAP).copy()
 
-            # Define the final columns for display 
+            # Define the final columns for display (excluding the ITM flag columns)
             DISPLAY_COLUMNS = [
-                'C-Vol', 'C-OI', 'CALL_Delta', 'CALL_Theta', 'C-Bid', 'C-Ask', 'C-IV',
+                'C-Vol', 'C-OI', 'C-Delta', 'C-Theta', 'C-Bid', 'C-Ask', 'C-IV',
                 'Strike', 
-                'P-IV', 'P-Bid', 'P-Ask', 'PUT_Delta', 'PUT_Theta', 'P-OI', 'P-Vol'
+                'P-IV', 'P-Bid', 'P-Ask', 'P-Delta', 'P-Theta', 'P-OI', 'P-Vol'
             ]
             
-            # 2. Subset the DataFrame *before* styling, including the ITM flags needed for highlight_itm
-            columns_for_styling = DISPLAY_COLUMNS + ['Is_ITM_Call', 'Is_ITM_Put']
-            df_final_for_styler = df_renamed[columns_for_styling].copy()
+            # The data that the styler will operate on (includes flags)
+            df_for_styler = df_renamed.copy()
 
 
             # --- Styling Logic ---
@@ -379,51 +402,55 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
                 is_call_itm = s['Is_ITM_Call']
                 is_put_itm = s['Is_ITM_Put']
                 
-                # Create style array with the same length as the row
-                styles = [''] * len(s) 
+                # Create styles dictionary mapping column names to styles
+                styles = {}
                 
-                # Get the column index (position) of the first and last column of the call/put side, and the strike
-                try:
-                    # Indices relative to df_final_for_styler's columns
-                    CALL_START_IDX = df_final_for_styler.columns.get_loc('C-Vol')
-                    CALL_END_IDX = df_final_for_styler.columns.get_loc('C-IV')
-                    PUT_START_IDX = df_final_for_styler.columns.get_loc('P-IV')
-                    PUT_END_IDX = df_final_for_styler.columns.get_loc('P-Vol')
-                    STRIKE_IDX = df_final_for_styler.columns.get_loc('Strike')
-                except KeyError:
-                    # This should not happen if column definition is correct, but safe guard.
-                    return styles
-
                 if is_call_itm:
-                    # Highlight Call side
-                    for i in range(CALL_START_IDX, CALL_END_IDX + 1):
-                        styles[i] = 'background-color: #ecfdf5' # Light Green
-                    styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
+                    # Highlight Call side columns
+                    for col in ['C-Vol', 'C-OI', 'C-Delta', 'C-Theta', 'C-Bid', 'C-Ask', 'C-IV']:
+                        styles[col] = 'background-color: #ecfdf5' # Light Green
+                    styles['Strike'] = 'background-color: #e5e7eb' # Darker gray for ATM
                 elif is_put_itm:
-                    # Highlight Put side
-                    for i in range(PUT_START_IDX, PUT_END_IDX + 1):
-                        styles[i] = 'background-color: #fef2f2' # Light Red
-                    styles[STRIKE_IDX] = 'background-color: #e5e7eb' # Darker gray for ATM
-                return styles
+                    # Highlight Put side columns
+                    for col in ['P-IV', 'P-Bid', 'P-Ask', 'P-Delta', 'P-Theta', 'P-OI', 'P-Vol']:
+                        styles[col] = 'background-color: #fef2f2' # Light Red
+                    styles['Strike'] = 'background-color: #e5e7eb' # Darker gray for ATM
+                    
+                # The apply function needs to return an array of strings, one for each column
+                # We build the output based on the column order in df_for_styler (which contains all columns)
+                # Since Streamlit's styler often fails with column-wise styling (apply(axis=1)), 
+                # we must return a list of styles for the entire row of the DataFrame being styled.
+                # However, since Streamlit only uses a subset of columns for display, we must ensure
+                # the styling function only targets the displayed columns correctly.
+                
+                # --- NEW ROBUST RETURN LOGIC: Return array matching the columns in df_for_styler ---
+                style_array = []
+                for col_name in df_for_styler.columns:
+                    style_array.append(styles.get(col_name, ''))
+                return style_array
 
 
-            # 3. Apply styling and formatting to the subset DataFrame
-            styled_df = df_final_for_styler.style.format({
-                'CALL_Delta': "{:.3f}", 
-                'PUT_Delta': "{:.3f}",
-                'CALL_Theta': "{:.4f}", 
-                'PUT_Theta': "{:.4f}",
+            # 2. Apply styling and formatting (no chaining)
+            # Apply styling
+            styled_df = df_for_styler.style.apply(highlight_itm, axis=1)
+            
+            # Apply formatting
+            styled_df = styled_df.format({
+                'C-Delta': "{:.3f}", 
+                'P-Delta': "{:.3f}",
+                'C-Theta': "{:.4f}", 
+                'P-Theta': "{:.4f}",
                 'C-IV': "{:.2%}",
                 'P-IV': "{:.2%}",
                 'Strike': "{:.2f}",
                 'C-Bid': "{:.2f}", 'C-Ask': "{:.2f}",
                 'P-Bid': "{:.2f}", 'P-Ask': "{:.2f}",
-            }).apply(highlight_itm, axis=1)
+            })
 
-
-            # 4. Use hide() to conceal the flag columns
-            styled_df_final = styled_df.hide(columns=['Is_ITM_Call', 'Is_ITM_Put'])
-
+            # 3. Final Display (we MUST use the styled object with a subset of the *original* columns)
+            # The style object retains the formatting, and when rendered, only the columns present
+            # in the DISPLAY_COLUMNS list are shown. This avoids the use of .hide() or .subset() on the Styler.
+            df_display = styled_df.set_properties(**{'border-color': '#444'}).set_table_attributes('style="width:100%"')
 
             # Custom header for the options chain
             st.markdown("""
@@ -442,9 +469,10 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
                 </div>
             """, unsafe_allow_html=True)
             
-            # Display the final styled DataFrame
+            # Display the final styled DataFrame using the subset of columns defined earlier
             st.dataframe(
-                styled_df_final,
+                df_display,
+                column_order=DISPLAY_COLUMNS, # Explicitly tell Streamlit which columns to show
                 use_container_width=True,
                 hide_index=True
             )
@@ -458,19 +486,25 @@ if st.session_state.data_summary is not None and st.session_state.data_chain is 
         else:
             chart_df = filtered_df.copy()
             
+            # Rename columns for better plot labels
+            chart_df.rename(columns={
+                'CALL_Volume': 'Call Volume', 'PUT_Volume': 'Put Volume', 
+                'CALL_Open Interest': 'Call Open Interest', 'PUT_Open Interest': 'Put Open Interest'
+            }, inplace=True)
+
             melted_df = pd.melt(
                 chart_df, 
                 id_vars=['Strike'], 
-                value_vars=['CALL_Volume', 'PUT_Volume', 'CALL_Open Interest', 'PUT_Open Interest'],
+                value_vars=['Call Volume', 'Put Volume', 'Call Open Interest', 'Put Open Interest'],
                 var_name='Metric', 
                 value_name='Value'
             )
             
             color_map = {
-                'CALL_Volume': '#10b981', 
-                'PUT_Volume': '#ef4444', 
-                'CALL_Open Interest': '#34d399', 
-                'PUT_Open Interest': '#f87171'
+                'Call Volume': '#10b981', 
+                'Put Volume': '#ef4444', 
+                'Call Open Interest': '#34d399', 
+                'Put Open Interest': '#f87171'
             }
 
             fig = px.bar(
